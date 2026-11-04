@@ -16,11 +16,24 @@ object IslandState {
     const val ACTION_UPDATE = "com.nova.launcher.ISLAND_UPDATE"
 }
 
-/** Reads notifications only after the user explicitly enables notification access in Android Settings. */
+/**
+ * Reads notifications only after the user explicitly enables notification-listener access in Android Settings.
+ * It does not create an overlay or display anything over other applications.
+ */
 class NovaNotificationListener : NotificationListenerService() {
-    override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (sbn.packageName == packageName) return
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        activeNotifications.orEmpty()
+            .filterNot { it.packageName == packageName }
+            .maxByOrNull { it.postTime }
+            ?.let(::updateFromNotification)
+    }
 
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        if (sbn.packageName != packageName) updateFromNotification(sbn)
+    }
+
+    private fun updateFromNotification(sbn: StatusBarNotification) {
         val notification = sbn.notification
         val extras = notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
@@ -31,7 +44,10 @@ class NovaNotificationListener : NotificationListenerService() {
 
         val actions = notification.actions.orEmpty().take(3).mapNotNull { action ->
             action.actionIntent?.let { pendingIntent ->
-                IslandState.IslandAction(action.title?.toString()?.takeIf(String::isNotBlank) ?: "Open", pendingIntent)
+                IslandState.IslandAction(
+                    action.title?.toString()?.takeIf { it.isNotBlank() } ?: "Action",
+                    pendingIntent
+                )
             }
         }
         IslandState.title = title.take(60)
@@ -41,6 +57,6 @@ class NovaNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        // Leave the latest notification visible; Android may remove it before the user sees the island.
+        // Keep the last notification visible so the user has time to read it.
     }
 }

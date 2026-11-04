@@ -19,9 +19,10 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
-import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.GridLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -37,12 +38,14 @@ class MainActivity : Activity() {
 
     private lateinit var appGrid: GridLayout
     private lateinit var search: EditText
+    private lateinit var folderBar: LinearLayout
     private lateinit var island: LinearLayout
     private lateinit var islandTitle: TextView
     private lateinit var islandDetail: TextView
     private lateinit var islandActions: LinearLayout
     private lateinit var clock: TextView
     private var islandExpanded = false
+    private var selectedFolder: String? = null
     private var allApps: List<LaunchableApp> = emptyList()
     private val prefs by lazy { getSharedPreferences("nova_launcher", MODE_PRIVATE) }
     private val handler = Handler(Looper.getMainLooper())
@@ -112,6 +115,7 @@ class MainActivity : Activity() {
             background = rounded(Color.BLACK, 36)
             isClickable = true
             isFocusable = true
+            contentDescription = "Dynamic Island. Tap to expand or collapse"
             setOnClickListener { islandExpanded = !islandExpanded; renderIsland() }
         }
         root.addView(island, LinearLayout.LayoutParams(-1, dp(76)).apply { topMargin = dp(20); bottomMargin = dp(18) })
@@ -139,9 +143,18 @@ class MainActivity : Activity() {
             singleLine = true
             setPadding(dp(14), 0, dp(14), 0)
             background = rounded(Color.rgb(36, 43, 69), 17)
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
         }
-        root.addView(search, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(10); bottomMargin = dp(8) })
+        root.addView(search, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(10); bottomMargin = dp(4) })
+
+        val folderScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+        }
+        folderBar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        folderScroll.addView(folderBar)
+        root.addView(folderScroll, LinearLayout.LayoutParams(-1, dp(42)))
+
         val scroll = ScrollView(this).apply { isFillViewport = true }
         appGrid = GridLayout(this).apply { columnCount = 4; useDefaultMargins = false }
         scroll.addView(appGrid)
@@ -169,10 +182,24 @@ class MainActivity : Activity() {
         showApps(search.text?.toString().orEmpty())
     }
 
+    private fun folderNames(): List<String> = prefs.all
+        .filterKeys { it.startsWith(FOLDER_PREFIX) }
+        .values.mapNotNull { it as? String }
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .distinct()
+        .sortedBy { it.lowercase(Locale.getDefault()) }
+
     private fun showApps(query: String) {
         if (!::appGrid.isInitialized) return
+        val folders = folderNames()
+        if (selectedFolder !in folders) selectedFolder = null
+        renderFolderBar(folders)
         appGrid.removeAllViews()
-        val visibleApps = allApps.filter { it.label.contains(query.trim(), ignoreCase = true) }
+        val visibleApps = allApps.filter { app ->
+            app.label.contains(query.trim(), ignoreCase = true) &&
+                (selectedFolder == null || prefs.getString(folderKey(app.packageName), null) == selectedFolder)
+        }
         visibleApps.forEach { app ->
             val cell = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -189,23 +216,45 @@ class MainActivity : Activity() {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 contentDescription = app.label
             }, LinearLayout.LayoutParams(dp(42), dp(42)))
-            cell.addView(text(app.label, 10f, Color.WHITE, false).apply {
+            val savedFolder = prefs.getString(folderKey(app.packageName), null)
+            val displayLabel = if (savedFolder.isNullOrBlank()) app.label else "${app.label}\n$savedFolder"
+            cell.addView(text(displayLabel, 10f, Color.WHITE, false).apply {
                 gravity = Gravity.CENTER
                 maxLines = 2
                 ellipsize = android.text.TextUtils.TruncateAt.END
-            }, LinearLayout.LayoutParams(-1, dp(34)))
+            }, LinearLayout.LayoutParams(-1, dp(36)))
             appGrid.addView(cell, GridLayout.LayoutParams().apply {
                 width = 0
-                height = dp(82)
+                height = dp(86)
                 columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
             })
         }
         if (visibleApps.isEmpty()) {
-            appGrid.addView(text("No apps found", 14f, Color.LTGRAY, false).apply {
+            appGrid.addView(text(if (selectedFolder == null) "No apps found" else "This folder is empty", 14f, Color.LTGRAY, false).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(24), 0, dp(24))
             }, GridLayout.LayoutParams().apply { columnSpec = GridLayout.spec(0, 4) })
         }
+    }
+
+    private fun renderFolderBar(folders: List<String>) {
+        folderBar.removeAllViews()
+        val scroller = folderBar.parent as? HorizontalScrollView ?: return
+        scroller.visibility = if (folders.isEmpty()) View.GONE else View.VISIBLE
+        addFolderChip("All", null)
+        folders.forEach { addFolderChip(it, it) }
+    }
+
+    private fun addFolderChip(label: String, folder: String?) {
+        val selected = selectedFolder == folder
+        folderBar.addView(text(label, 12f, if (selected) Color.BLACK else Color.WHITE, selected).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            background = rounded(if (selected) ACCENT else Color.rgb(49, 58, 88), 18)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { selectedFolder = folder; showApps(search.text?.toString().orEmpty()) }
+        }, LinearLayout.LayoutParams(-2, dp(34)).apply { marginEnd = dp(8) })
     }
 
     private fun launchApp(packageName: String) {
@@ -218,25 +267,36 @@ class MainActivity : Activity() {
 
     private fun showAppMenu(app: LaunchableApp) {
         AlertDialog.Builder(this).setTitle(app.label)
-            .setItems(arrayOf("Open", "App info", "Save folder label")) { _, which ->
+            .setItems(arrayOf("Open", "App info", "Set or change folder", "Remove from folder")) { _, which ->
                 when (which) {
                     0 -> launchApp(app.packageName)
                     1 -> try { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${app.packageName}"))) } catch (_: Exception) { }
                     2 -> editFolderLabel(app)
+                    3 -> { prefs.edit().remove(folderKey(app.packageName)).apply(); showApps(search.text?.toString().orEmpty()) }
                 }
             }.show()
     }
 
     private fun editFolderLabel(app: LaunchableApp) {
-        val input = EditText(this).apply { setText(prefs.getString("folder_${app.packageName}", "")) }
-        AlertDialog.Builder(this).setTitle("Folder label")
-            .setMessage("Save a local label for organizing this app.")
+        val input = EditText(this).apply {
+            hint = "e.g. Work or Games"
+            setText(prefs.getString(folderKey(app.packageName), ""))
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this).setTitle("Set folder")
+            .setMessage("Apps assigned the same folder name appear together in the folder filter.")
             .setView(input)
             .setPositiveButton("Save") { _, _ ->
-                prefs.edit().putString("folder_${app.packageName}", input.text.toString()).apply()
-                Toast.makeText(this, "Folder label saved", Toast.LENGTH_SHORT).show()
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) prefs.edit().remove(folderKey(app.packageName)).apply()
+                else prefs.edit().putString(folderKey(app.packageName), name).apply()
+                showApps(search.text?.toString().orEmpty())
+                Toast.makeText(this, if (name.isEmpty()) "Folder removed" else "Folder saved", Toast.LENGTH_SHORT).show()
             }
-            .setNeutralButton("Clear") { _, _ -> prefs.edit().remove("folder_${app.packageName}").apply() }
+            .setNeutralButton("Remove") { _, _ ->
+                prefs.edit().remove(folderKey(app.packageName)).apply()
+                showApps(search.text?.toString().orEmpty())
+            }
             .setNegativeButton("Cancel", null).show()
     }
 
@@ -255,6 +315,7 @@ class MainActivity : Activity() {
                     setTextColor(Color.WHITE)
                     setPadding(dp(10), dp(8), dp(10), dp(8))
                     isClickable = true
+                    isFocusable = true
                     setOnClickListener {
                         try { action.intent.send() } catch (_: Exception) {
                             Toast.makeText(this@MainActivity, "Action unavailable", Toast.LENGTH_SHORT).show()
@@ -313,6 +374,8 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQUEST_NOTIFICATIONS = 10
+        private const val FOLDER_PREFIX = "folder_"
         private val ACCENT = Color.rgb(145, 175, 255)
+        private fun folderKey(packageName: String) = FOLDER_PREFIX + packageName
     }
 }
